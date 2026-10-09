@@ -1,0 +1,23 @@
+{
+  "name": "action-history-ui",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently --kill-others --names api,react --prefix-colors magenta,cyan \"python3 serve.py\" \"vite\"",
+    "dev:ui": "vite",
+    "dev:api": "python3 serve.py",
+    "build": "vite build",
+    "start": "python3 serve.py",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "concurrently": "latest"
+  }
+}
