@@ -11,8 +11,10 @@ RUN npm run build
 
 FROM public.ecr.aws/docker/library/python:3.12-slim
 WORKDIR /app
+ENV PYTHONUNBUFFERED=1
 RUN pip install --no-cache-dir psycopg2-binary
 COPY serve.py ./
 COPY --from=ui /app/dist ./dist
 USER nobody
-CMD ["python3", "serve.py", "--port", "8090", "--env-file", "/app/.env"]
+# Listens on every interface, so serve.py refuses to start without VIEWER_USER/VIEWER_PASSWORD.
+CMD ["python3", "serve.py", "--host", "0.0.0.0", "--port", "8090", "--env-file", "/app/.env"]

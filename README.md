@@ -74,7 +74,7 @@ STAGING_USER_ROLE_SERVICE_TENANT_CONFIGS={...}
 
 - PostgreSQL connections use `default_transaction_read_only=on`.
 - Only `SELECT` queries are issued.
-- The server binds to `127.0.0.1`.
+- The server binds to `127.0.0.1` unless `--host` is given; any other host requires `VIEWER_USER`/`VIEWER_PASSWORD`.
 - Only compiled frontend assets are served; `.env` and source/backend files are
   not exposed.
 - Request bodies are rendered as text by React. Passwords, tokens, OTPs, and
@@ -82,9 +82,10 @@ STAGING_USER_ROLE_SERVICE_TENANT_CONFIGS={...}
 
 ## Deploy with Docker
 
-The server binds to `127.0.0.1`, so run the container on the host network: the
-viewer is then reachable only from the host itself, and you open it through an
-SSH tunnel. `--user` runs it as you, so it can read your `chmod 600` .env.
+The image listens on every interface, so it needs a login: set `VIEWER_USER`
+and `VIEWER_PASSWORD` in `.env` or the server refuses to start. The browser
+asks for them once per session. Over plain HTTP the password crosses the
+network unencrypted, so use a long random one (`openssl rand -base64 18`).
 
 ```bash
 docker build -t action-history-ui .
@@ -93,5 +94,6 @@ docker run -d --name action_history_ui --restart unless-stopped --network host \
   -v "$PWD/.env:/app/.env:ro" action-history-ui
 ```
 
-From your laptop: `ssh -N -L 8090:127.0.0.1:8090 <server>`, then open
-`http://127.0.0.1:8090`.
+Then open `http://<server-ip>:8090` (the port must be open in the server's
+firewall / security group). `--user` runs the container as you, so it can read
+your `chmod 600` .env.

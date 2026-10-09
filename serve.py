@@ -12,16 +12,21 @@ migration not run, or the database is unreachable.
 
 Read-only by construction: every connection is opened with
 default_transaction_read_only=on, and only SELECTs are ever sent. Listens on
-127.0.0.1 only. Needs psycopg2 (python3 -m pip install psycopg2-binary).
+127.0.0.1 unless --host says otherwise; any other host needs VIEWER_USER and
+VIEWER_PASSWORD in .env, and then every request asks for them (HTTP Basic auth).
+Needs psycopg2 (python3 -m pip install psycopg2-binary).
 """
 
 import argparse
+import base64
 import datetime
 import decimal
+import hmac
 import http.server
 import json
 import os
 import re
+import sys
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
@@ -430,13 +435,40 @@ class Api:
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     api: Api = None  # set in main()
+    credentials: Optional[Tuple[str, str]] = None  # (user, password) when a login is required
 
     def __init__(self, *args, **kwargs):
         static_root = BUILD_DIR if os.path.isfile(os.path.join(BUILD_DIR, "index.html")) else HERE
         self.static_root = static_root
         super().__init__(*args, directory=static_root, **kwargs)
 
+    def do_HEAD(self):
+        # SimpleHTTPRequestHandler would answer HEAD for any file, outside the allowlist below.
+        self.send_error(405)
+
+    def _authorized(self) -> bool:
+        if self.credentials is None:
+            return True
+        scheme, _, encoded = (self.headers.get("Authorization") or "").partition(" ")
+        if scheme.lower() == "basic":
+            try:
+                user, _, password = base64.b64decode(encoded, validate=True).decode().partition(":")
+            except ValueError:
+                user, password = "", ""
+            # Compare both, always, so a wrong user name takes as long as a wrong password.
+            user_ok = hmac.compare_digest(user.encode(), self.credentials[0].encode())
+            password_ok = hmac.compare_digest(password.encode(), self.credentials[1].encode())
+            if user_ok and password_ok:
+                return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Action History", charset="UTF-8"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def do_GET(self):
+        if not self._authorized():
+            return
         url = urlsplit(self.path)
         if not url.path.startswith("/api/"):
             # Only the compiled React application is public. This keeps .env and
@@ -487,19 +519,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8090)
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="address to listen on; anything but 127.0.0.1 needs VIEWER_USER/VIEWER_PASSWORD")
     parser.add_argument("--env-file", default=os.path.join(HERE, ".env"))
     args = parser.parse_args()
 
-    config = Config(load_env(args.env_file))
+    env = load_env(args.env_file)
+    config = Config(env)
+    user, password = env.get("VIEWER_USER", "").strip(), env.get("VIEWER_PASSWORD", "")
+    if user and password:
+        Handler.credentials = (user, password)
+    elif args.host not in ("127.0.0.1", "localhost", "::1"):
+        sys.exit(f"Refusing to listen on {args.host} without a login: set VIEWER_USER and "
+                 f"VIEWER_PASSWORD in {args.env_file}.")
     Handler.api = Api(config, Databases(config))
     for error in config.errors:
         print(f"warning: {error}")
     configured = ", ".join(f"{e}/{s}" for e, s in config.databases) or "nothing (demo data only)"
-    print(f"Action History viewer: http://127.0.0.1:{args.port}")
+    print(f"Action History viewer: http://{args.host}:{args.port}"
+          + (" (login required)" if Handler.credentials else ""))
     if not os.path.isfile(os.path.join(BUILD_DIR, "index.html")):
         print("UI build not found: run 'npm install && npm run build' first, or use 'npm run dev'.")
     print(f"Configured: {configured}")
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
