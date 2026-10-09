@@ -79,3 +79,19 @@ STAGING_USER_ROLE_SERVICE_TENANT_CONFIGS={...}
   not exposed.
 - Request bodies are rendered as text by React. Passwords, tokens, OTPs, and
   keys are expected to be masked before storage.
+
+## Deploy with Docker
+
+The server binds to `127.0.0.1`, so run the container on the host network: the
+viewer is then reachable only from the host itself, and you open it through an
+SSH tunnel. `--user` runs it as you, so it can read your `chmod 600` .env.
+
+```bash
+docker build -t action-history-ui .
+docker run -d --name action_history_ui --restart unless-stopped --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/.env:/app/.env:ro" action-history-ui
+```
+
+From your laptop: `ssh -N -L 8090:127.0.0.1:8090 <server>`, then open
+`http://127.0.0.1:8090`.
