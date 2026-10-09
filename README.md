@@ -4,6 +4,10 @@ A React audit dashboard for understanding who changed what, when it happened,
 which entity was targeted, and what else changed as a side effect. The Python
 server reads the configured databases directly and never writes to them.
 
+Action history is currently available for TMS and User Role Service. Other
+configured services remain visible in the source picker and clearly report when
+recording has not been added yet.
+
 ## Run locally
 
 Install dependencies, then start the complete app with one command:

@@ -36,7 +36,10 @@ BUILD_DIR = os.path.join(HERE, "dist")
 
 # Services whose action history exists, and the table it lives in. Every other
 # service in SERVICES is shown as "not recorded yet".
-HISTORY_TABLES = {"tms": "action_history"}
+HISTORY_TABLES = {
+    "tms": "action_history",
+    "user_role_service": "action_history",
+}
 # The Action filter suggests names seen in this many of the newest rows.
 ACTIONS_SCAN_ROWS = 50000
 # Where actor names and roles come from.
