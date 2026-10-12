@@ -3,8 +3,9 @@ import { demoActions, demoActors, demoEntities, demoItems } from "./demoData";
 
 const DEMO = "demo";
 const PER_PAGE = 20;
-const FILTER_KEYS = ["event_id", "created_by", "action", "entity_type", "entity_id", "date_from", "date_to", "failed_only"];
+const FILTER_KEYS = ["request_id", "event_id", "created_by", "action", "entity_type", "entity_id", "date_from", "date_to", "failed_only"];
 const FILTER_LABELS = {
+  request_id: "Request ID",
   event_id: "Event",
   created_by: "Actor",
   action: "Action",
@@ -170,6 +171,7 @@ function describeAction(item) {
 function demoList(filters, page) {
   const normalizedType = String(filters.entity_type || "").toLowerCase();
   const rows = demoItems.filter((item) =>
+    (!filters.request_id || String(item.meta?.request_id || "") === String(filters.request_id).trim()) &&
     (!filters.event_id || String(item.event_id) === String(filters.event_id)) &&
     (!filters.created_by || String(item.created_by) === String(filters.created_by)) &&
     (!filters.action || item.action.includes(String(filters.action).toUpperCase())) &&
@@ -268,6 +270,7 @@ function FilterPanel({ form, setForm, actions, entities, onApply, onClear, mobil
           <label className="field"><span>Event ID</span><input inputMode="numeric" value={form.event_id || ""} placeholder="e.g. 2582" onChange={(event) => update("event_id", event.target.value)} /></label>
         </div>
         <label className="field full"><span>Actor / User role ID</span><input inputMode="numeric" value={form.created_by || ""} placeholder="e.g. 42" onChange={(event) => update("created_by", event.target.value)} /></label>
+        <label className="field full"><span>Request ID</span><div className="input-wrap"><Icon name="search" size={16} /><input value={form.request_id || ""} placeholder="e.g. a1b2c3d4e5f6" autoComplete="off" spellCheck="false" onChange={(event) => update("request_id", event.target.value)} /></div></label>
         <div className="field full"><span className="label-text">Date range</span><div className="date-field"><Icon name="calendar" size={16} /><input type="date" value={form.date_from || ""} aria-label="From date" onChange={(event) => update("date_from", event.target.value)} /><i>to</i><input type="date" value={form.date_to || ""} aria-label="To date" onChange={(event) => update("date_to", event.target.value)} /></div></div>
         <label className="toggle-row"><span><strong>Failed attempts only</strong><small>Show responses with 4xx or 5xx status</small></span><input type="checkbox" checked={Boolean(form.failed_only)} onChange={(event) => update("failed_only", event.target.checked)} /><i /></label>
         <div className="filter-actions"><button className="primary-button" type="submit">Apply filters <Icon name="arrow" size={16} /></button><button className="text-button" type="button" onClick={onClear}>Reset all</button></div>
@@ -279,7 +282,7 @@ function FilterPanel({ form, setForm, actions, entities, onApply, onClear, mobil
 function ActiveFilters({ filters, onRemove }) {
   const entries = Object.entries(filters);
   if (!entries.length) return null;
-  return <div className="active-filters"><span>Active</span>{entries.map(([key, value]) => <button type="button" key={key} onClick={() => onRemove(key)}>{key === "failed_only" ? FILTER_LABELS[key] : `${FILTER_LABELS[key]}: ${titleWords(value)}`}<Icon name="close" size={12} /></button>)}</div>;
+  return <div className="active-filters"><span>Active</span>{entries.map(([key, value]) => <button type="button" key={key} onClick={() => onRemove(key)}>{key === "failed_only" ? FILTER_LABELS[key] : `${FILTER_LABELS[key]}: ${key === "request_id" ? value : titleWords(value)}`}<Icon name="close" size={12} /></button>)}</div>;
 }
 
 function EffectRow({ effect, onEntity }) {

@@ -49,7 +49,9 @@ That version opens at `http://127.0.0.1:8090`.
   than silently hiding the missing value.
 
 The API exposes `GET /api/entities` for the populated filter and accepts
-`entity_type` and `entity_id` on `GET /api/list`.
+`entity_type`, `entity_id`, and an exact `request_id` on `GET /api/list`.
+Request IDs are stored in `meta.request_id`; the filter is also preserved in
+the page URL so a filtered activity view can be shared.
 
 The sidebar directories are interactive: **Entities** groups recent history by
 entity type, while **Actors** uses `GET /api/actors` to show each user role's

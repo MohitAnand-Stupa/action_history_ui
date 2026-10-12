@@ -418,6 +418,10 @@ class Api:
             # Part of a name matches too: "slot" finds ASSIGN_MATCH_SLOTS and SWAP_MATCH_SLOTS.
             clauses.append("action LIKE %s ESCAPE '\\'")
             args.append("%" + re.sub(r"([\\%_])", r"\\\1", action.upper()) + "%")
+        request_id = params.get("request_id", "").strip()
+        if request_id:
+            clauses.append("meta->>'request_id' = %s")
+            args.append(request_id)
         entity_type, entity_id = params.get("entity_type", "").strip(), _int(params, "entity_id")
         if entity_type:
             clauses.append("entity_type = %s")
