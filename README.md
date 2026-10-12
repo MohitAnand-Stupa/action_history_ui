@@ -4,9 +4,9 @@ A React audit dashboard for understanding who changed what, when it happened,
 which entity was targeted, and what else changed as a side effect. The Python
 server reads the configured databases directly and never writes to them.
 
-Action history is currently available for TMS and User Role Service. Other
-configured services remain visible in the source picker and clearly report when
-recording has not been added yet.
+Action history is currently available for TMS, RNR, User Role Service, and
+Order. Other configured services remain visible in the source picker and
+clearly report when recording has not been added yet.
 
 ## Run locally
 
@@ -70,6 +70,13 @@ STAGING_USER_ROLE_SERVICE_TENANT_CONFIGS={...}
 
 - Each `<ENVIRONMENT>_<SERVICE>_TENANT_CONFIGS` value is that service's own
   `TENANT_CONFIGS` JSON for that environment.
+- RNR is the exception: it intentionally writes tagged rows to TMS's shared
+  `action_history` table, so it reuses the TMS configuration and does not need
+  a separate `RNR_TENANT_CONFIGS` value. Selecting RNR filters out TMS rows.
+- Order automatically reuses TMS's host, credentials, port, and schema, changing
+  only `DB_NAME` to `order`. An explicit `ORDER_TENANT_CONFIGS` can override
+  that fallback but is normally unnecessary. Its history rows are filtered by
+  `meta.tenant`, because multiple tenants can share one Order database.
 - When `USER_ROLE_SERVICE` is configured for an environment, actor names and
   roles are resolved. Otherwise user-role IDs remain visible.
 - Restart `npm run dev` after editing `.env`.

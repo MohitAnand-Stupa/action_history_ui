@@ -34,11 +34,20 @@ from urllib.parse import parse_qs, urlsplit
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD_DIR = os.path.join(HERE, "dist")
 
-# Services whose action history exists, and the table it lives in. Every other
-# service in SERVICES is shown as "not recorded yet".
-HISTORY_TABLES = {
-    "tms": "action_history",
-    "user_role_service": "action_history",
+# Services whose action history exists, where its table lives, and (for a
+# shared table) which rows belong to the selected service. RNR deliberately
+# writes to TMS's action_history table, tagged with meta.service="rnr".
+HISTORY_SOURCES = {
+    "tms": {"table": "action_history", "database_service": "tms", "row_service": "tms"},
+    "rnr": {"table": "action_history", "database_service": "tms", "row_service": "rnr"},
+    "user_role_service": {"table": "action_history", "database_service": "user_role_service"},
+    "order": {
+        "table": "action_history",
+        "database_service": "order",
+        "fallback_database_service": "tms",
+        "database_overrides": {"DB_NAME": "order"},
+        "row_tenant": True,
+    },
 }
 # The Action filter suggests names seen in this many of the newest rows.
 ACTIONS_SCAN_ROWS = 50000
@@ -106,11 +115,32 @@ class Config:
                 except ValueError as error:
                     self.errors.append(f"{name} is not valid JSON: {error}")
 
+        # Order uses the same host, credentials and schema as TMS, with only a
+        # different database name. An explicit ORDER_TENANT_CONFIGS still wins,
+        # but it is not required for the normal setup.
+        for env_key, _ in self.environments:
+            for service_key, source in HISTORY_SOURCES.items():
+                target_key = (env_key, source.get("database_service", service_key))
+                fallback_service = source.get("fallback_database_service")
+                fallback_key = (env_key, fallback_service)
+                if target_key in self.databases or not fallback_service or fallback_key not in self.databases:
+                    continue
+                overrides = source.get("database_overrides", {})
+                self.databases[target_key] = {
+                    tenant: {**settings, **overrides}
+                    for tenant, settings in self.databases[fallback_key].items()
+                }
+
     def label(self, pairs: List[Tuple[str, str]], key: str) -> str:
         return dict(pairs).get(key, key)
 
     def tenants(self, env_key: str, service_key: str) -> List[str]:
         return list(self.databases.get((env_key, service_key), {}))
+
+    @staticmethod
+    def history_database_service(service_key: str) -> str:
+        source = HISTORY_SOURCES.get(service_key, {})
+        return source.get("database_service", service_key)
 
     def public(self) -> Dict[str, Any]:
         """What the page needs to build its dropdowns -- no credentials."""
@@ -118,12 +148,13 @@ class Config:
         for env_key, env_label in self.environments:
             services = []
             for service_key, service_label in self.services:
+                database_service = self.history_database_service(service_key)
                 services.append({
                     "key": service_key,
                     "label": service_label,
-                    "records_history": service_key in HISTORY_TABLES,
-                    "configured": (env_key, service_key) in self.databases,
-                    "tenants": self.tenants(env_key, service_key),
+                    "records_history": service_key in HISTORY_SOURCES,
+                    "configured": (env_key, database_service) in self.databases,
+                    "tenants": self.tenants(env_key, database_service),
                 })
             environments.append({"key": env_key, "label": env_label, "services": services})
         return {"environments": environments, "errors": self.errors}
@@ -235,7 +266,7 @@ class Api:
         self.config = config
         self.db = databases
 
-    def _selection(self, params: Dict[str, str]) -> Tuple[str, str, str, str]:
+    def _selection(self, params: Dict[str, str]) -> Tuple[str, str, str, str, str]:
         env_key, service_key, tenant = params.get("env", ""), params.get("service", ""), params.get("tenant", "")
         env_label = self.config.label(self.config.environments, env_key)
         service_label = self.config.label(self.config.services, service_key)
@@ -243,23 +274,46 @@ class Api:
 
         if psycopg2 is None:
             raise ApiError(503, "psycopg2 is not installed. Run: python3 -m pip install psycopg2-binary", "setup")
-        if service_key not in HISTORY_TABLES:
+        if service_key not in HISTORY_SOURCES:
             raise ApiError(404, f"{service_label} doesn't record action history yet. Today only "
-                           f"{', '.join(self.config.label(self.config.services, s) for s in HISTORY_TABLES)} does.",
+                           f"{', '.join(self.config.label(self.config.services, s) for s in HISTORY_SOURCES)} does.",
                            "not_recorded")
-        if (env_key, service_key) not in self.config.databases:
+        database_service = self.config.history_database_service(service_key)
+        if (env_key, database_service) not in self.config.databases:
             raise ApiError(404, f"No database is configured for {where}. Add "
-                           f"{env_key.upper()}_{service_key.upper()}_TENANT_CONFIGS to action_history_ui/.env.",
+                           f"{env_key.upper()}_{database_service.upper()}_TENANT_CONFIGS to action_history_ui/.env.",
                            "not_configured")
-        if tenant not in self.config.tenants(env_key, service_key):
+        if tenant not in self.config.tenants(env_key, database_service):
             raise ApiError(404, f"Tenant '{tenant}' isn't configured for {where}.", "not_configured")
-        return env_key, service_key, tenant, where
+        return env_key, service_key, database_service, tenant, where
+
+    @staticmethod
+    def _row_scope(service_key: str, tenant: str) -> Tuple[str, List[Any]]:
+        """Keep shared-table services and tenants apart.
+
+        Older TMS rows predate meta.service, so an absent tag still belongs to
+        TMS. RNR rows have always been written with an explicit tag. Order can
+        store multiple tenants in one database, tagged with meta.tenant.
+        """
+        row_service = HISTORY_SOURCES[service_key].get("row_service")
+        clauses: List[str] = []
+        args: List[Any] = []
+        if row_service == "tms":
+            clauses.append("(meta->>'service' IS NULL OR meta->>'service' = %s)")
+            args.append(row_service)
+        elif row_service:
+            clauses.append("meta->>'service' = %s")
+            args.append(row_service)
+        if HISTORY_SOURCES[service_key].get("row_tenant"):
+            clauses.append("meta->>'tenant' = %s")
+            args.append(tenant)
+        return " AND ".join(clauses), args
 
     def status(self, params: Dict[str, str]) -> Dict[str, Any]:
-        env_key, service_key, tenant, where = self._selection(params)
-        table = HISTORY_TABLES[service_key]
+        env_key, service_key, database_service, tenant, where = self._selection(params)
+        table = HISTORY_SOURCES[service_key]["table"]
         try:
-            [(exists,)] = self.db.query(env_key, service_key, tenant, "SELECT to_regclass(%s) IS NOT NULL", (table,))
+            [(exists,)] = self.db.query(env_key, database_service, tenant, "SELECT to_regclass(%s) IS NOT NULL", (table,))
         except Exception as error:  # noqa: BLE001 -- shown to the person running the viewer
             raise ApiError(502, f"Couldn't connect to the {where} database ({tenant}): {str(error).strip()}", "unreachable")
         if not exists:
@@ -281,14 +335,17 @@ class Api:
 
         Reads only the newest rows (primary key order), so it stays fast however big the table gets.
         """
-        env_key, service_key, tenant, where = self._selection(params)
-        table = HISTORY_TABLES[service_key]
+        env_key, service_key, database_service, tenant, where = self._selection(params)
+        table = HISTORY_SOURCES[service_key]["table"]
+        scope, scope_args = self._row_scope(service_key, tenant)
+        scope_sql = f"WHERE {scope}" if scope else ""
         try:
             rows = self.db.query(
-                env_key, service_key, tenant,
-                f"SELECT action, count(*) FROM (SELECT action FROM {table} ORDER BY id DESC LIMIT %s) recent "
+                env_key, database_service, tenant,
+                f"SELECT action, count(*) FROM (SELECT action FROM {table} {scope_sql} "
+                f"ORDER BY id DESC LIMIT %s) recent "
                 f"GROUP BY action ORDER BY count(*) DESC, action LIMIT 500",
-                (ACTIONS_SCAN_ROWS,),
+                scope_args + [ACTIONS_SCAN_ROWS],
             )
         except Exception as error:  # noqa: BLE001
             raise ApiError(502, f"Reading {where} ({tenant}) failed: {str(error).strip()}", "unreachable")
@@ -300,15 +357,17 @@ class Api:
         This deliberately uses the same bounded recent-row scan as actions so a
         large audit table cannot make opening the filter unexpectedly expensive.
         """
-        env_key, service_key, tenant, where = self._selection(params)
-        table = HISTORY_TABLES[service_key]
+        env_key, service_key, database_service, tenant, where = self._selection(params)
+        table = HISTORY_SOURCES[service_key]["table"]
+        scope, scope_args = self._row_scope(service_key, tenant)
+        scope_sql = f"WHERE {scope}" if scope else ""
         try:
             rows = self.db.query(
-                env_key, service_key, tenant,
+                env_key, database_service, tenant,
                 f"SELECT entity_type, count(*) FROM (SELECT entity_type FROM {table} "
-                f"ORDER BY id DESC LIMIT %s) recent WHERE entity_type IS NOT NULL "
+                f"{scope_sql} ORDER BY id DESC LIMIT %s) recent WHERE entity_type IS NOT NULL "
                 f"AND entity_type <> '' GROUP BY entity_type ORDER BY count(*) DESC, entity_type LIMIT 500",
-                (ACTIONS_SCAN_ROWS,),
+                scope_args + [ACTIONS_SCAN_ROWS],
             )
         except Exception as error:  # noqa: BLE001
             raise ApiError(502, f"Reading {where} ({tenant}) failed: {str(error).strip()}", "unreachable")
@@ -316,17 +375,19 @@ class Api:
 
     def actors(self, params: Dict[str, str]) -> Dict[str, Any]:
         """Actors present in recent history, enriched with names and roles."""
-        env_key, service_key, tenant, where = self._selection(params)
-        table = HISTORY_TABLES[service_key]
+        env_key, service_key, database_service, tenant, where = self._selection(params)
+        table = HISTORY_SOURCES[service_key]["table"]
+        scope, scope_args = self._row_scope(service_key, tenant)
+        scope_sql = f"WHERE {scope}" if scope else ""
         try:
             rows = self.db.query(
-                env_key, service_key, tenant,
+                env_key, database_service, tenant,
                 f"SELECT created_by, count(*), max(created_at), "
                 f"count(*) FILTER (WHERE status >= 400) FROM ("
-                f"SELECT created_by, created_at, status FROM {table} ORDER BY id DESC LIMIT %s"
+                f"SELECT created_by, created_at, status FROM {table} {scope_sql} ORDER BY id DESC LIMIT %s"
                 f") recent WHERE created_by IS NOT NULL GROUP BY created_by "
                 f"ORDER BY count(*) DESC, created_by LIMIT 500",
-                (ACTIONS_SCAN_ROWS,),
+                scope_args + [ACTIONS_SCAN_ROWS],
             )
         except Exception as error:  # noqa: BLE001
             raise ApiError(502, f"Reading {where} ({tenant}) failed: {str(error).strip()}", "unreachable")
@@ -340,12 +401,13 @@ class Api:
         return {"items": items}
 
     def list(self, params: Dict[str, str]) -> Dict[str, Any]:
-        env_key, service_key, tenant, where = self._selection(params)
-        table = HISTORY_TABLES[service_key]
+        env_key, service_key, database_service, tenant, where = self._selection(params)
+        table = HISTORY_SOURCES[service_key]["table"]
         page_num = max(1, _int(params, "page_num") or 1)
         per_page = min(MAX_PER_PAGE, max(1, _int(params, "per_page") or 50))
 
-        clauses, args = [], []
+        scope, scope_args = self._row_scope(service_key, tenant)
+        clauses, args = ([scope] if scope else []), list(scope_args)
         for key in ("event_id", "created_by"):
             value = _int(params, key)
             if value is not None:
@@ -375,9 +437,10 @@ class Api:
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
         try:
-            [(total,)] = self.db.query(env_key, service_key, tenant, f"SELECT count(*) FROM {table} {where_sql}", args)
+            [(total,)] = self.db.query(
+                env_key, database_service, tenant, f"SELECT count(*) FROM {table} {where_sql}", args)
             rows = self.db.query(
-                env_key, service_key, tenant,
+                env_key, database_service, tenant,
                 f"SELECT id, created_at, created_by, action, entity_type, entity_id, event_id, status, meta "
                 f"FROM {table} {where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
                 args + [per_page, (page_num - 1) * per_page],
